@@ -1,0 +1,575 @@
+第一回目　課題１】フレームワークを使わない深層学習 (1): 全結合編
+第1回目の課題１では，フレームワークを使わないで，pythonのnumpyのみを用いて簡単なネットワークの順伝搬，逆伝搬，学習を行ってみましょう．
+
+まずは，全結合層＋ReLU＋2乗誤差関数 のネットワークを考えてみます．
+
+全結合層を使って任意の関数の近似を行います．
+
+In [4]:
+import math
+import numpy as np
+全結合層クラスFc を作ってみます． Fc(入力要素数，出力要素数) とします．
+
+なお，numpyでは，１次元でベクトルを表現すると横ベクトル扱いになってしまうので， わかりやすくするために，ｎ次元ベクトルを(n,1)の２次元配列で表現することとして， 縦ベクトルで表現とします．
+
+なお，Fcに活性化関数のReLUもまとめて入れてしまいます． さらに，update, updatem の勾配法によるパラメータの更新の メソッドも定義します．
+
+In [83]:
+    def adam(self, eta=0.001, rho1=0.9, rho2=0.99, eps=10e-8):
+        adaw = self.dEdw/self.count
+        adab = self.dEdb/self.count
+        self.adaMw = self.adaMw * rho1 + adaw * (1 - rho1)
+        self.adaVw = self.adaVw * rho2 + adaw * adaw *(1 - rho2)
+        Mw = self.adaMw/(1 - rho1)
+        Vw = self.adaVw/(1 - rho2)
+        delW = -eta * Mw / (np.sqrt(Vw + eps))
+        self.w += delW
+        self.adaMb = self.adaMb * rho1 + adab * (1 - rho1)
+        self.adaVb = self.adaVb * rho2 + adab * adab *(1 - rho2)
+        Mb = self.adaMb/(1 - rho1)
+        Vb = self.adaVb/(1 - rho2)
+        delB = -eta * Mb / (np.sqrt(Vb + eps))
+        self.b += delB
+        self.clear_grad()
+class Fc:
+    def __init__(self, n_in, n_out, relu=True, seed=0):
+        self.n_in=n_in
+        self.n_out=n_out
+        self.relu=relu
+        # w,b は全結合層の学習パラメータ．
+        # ReLuも全結合の中に含めてあります．
+        # ReLU=Trueのときは，Heの初期値．Falseのときは，Xavierの初期値とします．．
+        # xは直前のforward計算時の入力値．BPの計算時に必要．
+        np.random.seed(seed) # 同じ初期値を再現できるように seed を指定します．
+        if relu:
+            self.w=np.random.normal(0, math.sqrt(2.0/n_in), (n_out, n_in)) # Heの初期値
+            self.relu0=None # ReLUの順伝搬時に０以下で値が伝搬されない要素のインデックスを記録．BP時に利用．
+        else:
+            self.w=np.random.normal(0, math.sqrt(1.0/n_in), (n_out, n_in)) # Xavierの初期値   
+        self.b=np.zeros((n_out,1))
+        self.x=np.zeros((n_in,1))
+        #　誤差逆伝搬(Back-Propagation時の勾配を記録する変数)
+        self.dEdx=np.zeros((n_in,1)) # dE/dx を表す　BPの時に直前レイヤに伝わる勾配でδと表現されます．
+        self.dEdw=np.zeros((n_out,n_in)) # dE/dw を表す
+        self.dEdb=np.zeros((n_out,1)) # dE/db を表す
+        self.count=0
+        # 以下，MomentamSDGのための設定
+        self.mdw=np.zeros((n_out,n_in))
+        self.mdb=np.zeros((n_out,1))
+        #adagrad
+        self.theta=0.00000001
+        self.adw=np.ones((n_out,n_in))*self.theta
+        self.adb=np.ones((n_out,1))*self.theta
+        
+        #adam
+        self.adaMw=np.zeros((n_out,n_in))
+        self.adaVw=np.zeros((n_out,n_in))
+        self.adaMb=np.zeros((n_out,1))
+        self.adaVb=np.zeros((n_out,1))
+        
+        
+        
+#         self.theta=0.00000001
+#         self.adw=np.zeros((n_out,n_in))
+#         self.adb=np.zeros((n_out,1))
+ 
+    # forward は __call__ を使って定義する．単純な 行列＊ベクトル＋ベクトル　の計算．
+    def __call__(self,x): 
+        self.x = x
+        self.y = np.dot(self.w, x) + self.b
+        # ReLUは，値が０以下の要素は，０とする．０とした要素のインデックスは relu0に記録し，BP時に勾配を伝搬させない．
+        if self.relu:
+            self.relu0= self.y<=0
+            self.y[self.relu0]=0
+        return self.y
+​
+    # backward は，dE/dy を受け取って，dE/dx を出力．内部では，dE/dw, dE/db を更新
+    def backward(self, dEdy):
+            
+        # 順伝搬時に値が０以下だった要素は勾配を０として，勾配伝搬しない．
+        if self.relu:
+            dEdy[self.relu0]=0
+            
+        dydx = np.transpose(self.w)  # dWx/dx= np.transpose(W) であることより．
+        dydw = np.transpose(self.x)  # dWx/dW= np.transpose(x) 
+        # dydb = np.ones((self.n_out,1))   #  db/db = np.ones((n_out,1))　１なので特に計算しない．
+        # dEdw, dEdb に勾配を加算．dEdx (δ)は前層へ伝搬する勾配で，backwardの返り値とする．
+        self.dEdx = np.dot(dydx, dEdy)
+        self.dEdw += np.dot(dEdy, dydw)
+        self.dEdb += dEdy
+        self.count +=1  # 勾配の平均を取るために，足した勾配のサンプル数を記録．
+        return self.dEdx
+​
+    # 勾配をクリア
+    def clear_grad(self):
+        self.dEdw=0
+        self.dEdb=0
+        self.count=0
+        self.adw=0
+        self.adb=0
+        
+​
+    # 勾配法で重みをアップデート．countで割って，足しこんだ勾配のサンプル数で平均を取る
+    def update(self, lr=0.001):
+        self.w -= self.dEdw/self.count * lr
+        self.b -= self.dEdb/self.count * lr
+        self.clear_grad()
+    
+    # 慣性項（モーメンタム項）付きの勾配法
+    def updatem(self, lr=0.001, mu=0.9):
+        
+        self.mdw = self.mdw*mu - self.dEdw/self.count*lr
+        self.mdb = self.mdb*mu - self.dEdb/self.count*lr
+        self.w += self.mdw
+        self.b += self.mdb
+        self.clear_grad()
+        
+    def adagrad(self, mu=0.001):
+        graw = self.dEdw/self.count
+        grab = self.dEdb/self.count
+        self.adw += graw*graw
+        self.adb += grab*grab
+        nuw=mu/np.sqrt(self.adw+self.theta)*graw
+        nub=mu/np.sqrt(self.adb+self.theta)*grab
+        self.w -= nuw
+        self.b -= nub
+        self.clear_grad()
+​
+        
+    def adam(self, eta=0.001, rho1=0.9, rho2=0.99, eps=10e-8):
+        adaw = self.dEdw/self.count
+        adab = self.dEdb/self.count
+        self.adaMw = self.adaMw * rho1 + adaw * (1 - rho1)
+        self.adaVw = self.adaVw * rho2 + adaw * adaw *(1 - rho2)
+        Mw = self.adaMw/(1 - rho1)
+        Vw = self.adaVw/(1 - rho2)
+        delW = -eta * Mw / (np.sqrt(Vw + eps))
+        self.w += delW
+        self.adaMb = self.adaMb * rho1 + adab * (1 - rho1)
+        self.adaVb = self.adaVb * rho2 + adab * adab *(1 - rho2)
+        Mb = self.adaMb/(1 - rho1)
+        Vb = self.adaVb/(1 - rho2)
+        delB = -eta * Mb / (np.sqrt(Vb + eps))
+        self.b += delB
+        self.clear_grad()
+学習モデルのオブジェクトを生成します． 1x10+ReLU +10x10+ReLU + 10x1 の３層とします．
+
+In [84]:
+# fc1=Fc(1,30)
+# fc2=Fc(30,30)
+# fc3=Fc(30,1,False)
+fc1=Fc(1,20)
+fc2=Fc(20,20)
+fc3=Fc(20,1,False)
+Fcクラスの定義が終わったので，次に，近似する関数の定義を行って，学習データ(training data)，検証データ(validation data)を生成します．
+
+In [85]:
+def f(x):
+#     return -0.5*(x-2)**2+15
+    return 0.5*(x-1)**2-5
+​
+X_train=np.arange(-10,10,0.01,dtype=np.float32)
+Y_train= f(X_train)
+​
+# X_train, Y_trainは１次元配列なので，reshapeで ２次元の(n,dim)に変換します．dim=1です．
+X_train=np.reshape(X_train,[-1,1])   # (2000,)  -> (2000,1)
+Y_train=np.reshape(Y_train,[-1,1]) 
+num_train=np.size(X_train)
+​
+# テスト用の x も準備します．
+X_val=np.arange(-8,8,0.1,dtype=np.float32)
+Y_val= f(X_val)
+X_val=np.reshape(X_val,[-1,1])
+Y_val=np.reshape(Y_val,[-1,1])
+num_val=np.size(X_val)
+いよいよ，学習ループです． 誤差(loss)のグラフ表示も行います．
+
+In [86]:
+%matplotlib inline
+import matplotlib.pyplot as plt
+from IPython import display
+​
+x0=np.reshape(X_val,[-1])
+​
+lr=0.001 #学習率
+num_epoch=150 # エポック数
+num_batch=100 # mini-batch サイズ
+#plt.hold(False)
+losses=np.array([])
+losses_val=np.array([])
+ep=np.array([])
+# 表示エリアの設定
+fig=plt.figure()
+fig1 = fig.add_subplot(121)
+fig2 = fig.add_subplot(122)
+for epoch in range(num_epoch):
+# Stochastic Gradient Descent なので，epochごとに学習データをシャッフルします．
+    shuffler = np.random.permutation(num_train)
+    X_train=X_train[shuffler]
+    Y_train=Y_train[shuffler]
+    for n in range(0, num_train, num_batch):
+        loss=0
+        for i in range(num_batch):
+            # 順伝搬計算
+            y=fc3(fc2(fc1(np.c_[X_train[n+i]])))
+            # 誤差微分値，誤差値を計算します． 
+            dEdx=y-np.c_[Y_train[n+i]]
+            loss+=(dEdx**2)*0.5
+            # dEdx (δ)を計算して，逆伝搬します．
+            dEdx=fc3.backward(dEdx)
+            dEdx=fc2.backward(dEdx)
+            dEdx=fc1.backward(dEdx)
+        # minibatch の順伝搬，逆伝搬を行ったら，SDGで重みを更新
+        
+#         fc1.updatem(lr)
+#         fc2.updatem(lr)
+#         fc3.updatem(lr)
+        
+#         fc1.update(lr)
+#         fc2.update(lr)
+#         fc3.update(lr)
+        
+        fc1.adagrad()
+        fc2.adagrad()
+        fc3.adagrad()
+        
+#         fc1.adam()
+#         fc2.adam()
+#         fc3.adam()
+            
+        
+    
+    
+        # 各epochの最初にグラフ表示を行います．
+        if n==0:
+            #print "[%d %d] loss: %f" % (epoch,n,loss/num_batch)
+            losses=np.append(losses,loss/num_batch)
+            ep=np.append(ep,epoch)
+            # 検証用データの評価
+            loss_val=0
+            Y_pred=np.array([])
+            for i in range(num_val):
+                # 順伝搬計算
+                y=fc3(fc2(fc1(np.c_[X_val[i]])))
+                Y_pred=np.append(Y_pred,y)
+                # 誤差微分値，誤差値 
+                dEdx=y-np.c_[Y_val[i]]
+                loss_val+=(dEdx**2)*0.5    
+                # print y, Y_val[i], (dEdx**2)*0.5
+            losses_val=np.append(losses_val, loss_val/num_val)
+        
+            display.clear_output(wait = True)
+            fig1.axis([0, num_epoch, 0, 50])
+            fig1.plot(ep,losses,"b")
+            fig1.plot(ep,losses_val,"r")
+            fig2.axis([-8,8,-10,30])
+            y0=np.reshape(Y_pred,[-1])
+            fig2.plot(x0,y0,"b")
+            fig2.plot(x0,f(x0),"r")
+            display.display(fig)
+            if epoch<num_epoch-1:
+                fig2.cla()
+                
+display.clear_output(wait = True)
+print "loss_val:",loss_val
+loss_val: [[ 5.01275667]]
+
+課題1
+以下の小問の(1)-(5)を解答し，さらに(6)-(9)を1つ以上選択し回答すること．
+
+上記のコードにおける全結合層の順伝搬，逆伝搬の計算方法を説明し，上記のコードを実行せよ．
+関数  f(x)f(x)  を自由に書き換え，実行せよ．
+モデルパラメータ（例えば，10->30) を変化させて，結果を比較せよ．(特に最終loss値)
+学習率を変化させて挙動を観察せよ．
+モーメンタムSDGに変更して，ノーマルなSDGとの違いを観察せよ．モーメンタムSDGの実装は各自完成させよ．
+複数枚の学習画像(2～10枚程度)に対応させて，lossの下がり方の違いについて観察せよ．random shuffleは入れても入れなくてもよい．
+Adam, AdaGrad のどちらか一方，もしくは両方を実装して比較せよ．
+一定のepoch数，もしくは一定以下の誤差値で，学習率が段階的に下がるようし，効果を検証せよ．
+中間層の活性化関数にReLUに加えて，Sigmoidを追加し，(1)ReLu, (2)Sigmoid (3)活性化関数なし　の３通りを比較せよ．
+【課題1: 任意発展課題】
+興味のある人は，例えば，以下のような拡張を行ってみよ．
+
+RMSProp,AdaDeltaも実装せよ．
+畳み込み層を追加せよ．
+mini-batch をまとめて，一回で計算するように拡張せよ．dot の代わりに tensordot を使うようにせよ．
+上記のmini-batch対応を行った後，cupy ライブラリを使って，GPUに対応させよ．
+Batch Normalization Layerを追加せよ．
+SoftMax関数を追加せよ．
+課題1
+以下の小問の(1)-(5)を解答し，さらに(6)-(9)を1つ以上選択し回答すること．
+
+上記のコードにおける全結合層の順伝搬，逆伝搬の計算方法を説明し，上記のコードを実行せよ．
+関数  f(x)f(x)  を自由に書き換え，実行せよ．
+モデルパラメータ（例えば，10->30) を変化させて，結果を比較せよ．(特に最終loss値)
+モデルのパラメータを増やした結果lossの下がり方が少ない時よりも小さくなり、収束するのに時間がかかっていた。
+
+学習率を変化させて挙動を観察せよ． 学習率を増やしすぎるとlossの変化の振り幅が大きくなりすぎて最終的なlossも適正値の時と比べて大きくなってしまう。一方学習率を減らしすぎると変更の幅が小さすぎて一向に収束しない。
+モーメンタムSDGに変更して，ノーマルなSDGとの違いを観察せよ．モーメンタムSDGの実装は各自完成させよ． モーメンタムSGDに変更した結果ノーマルのSGDに比べてかなり早く収束することがわかった。
+複数枚の学習画像(2～10枚程度)に対応させて，lossの下がり方の違いについて観察せよ．random shuffleは入れても入れなくてもよい．
+
+Adam, AdaGrad のどちらか一方，もしくは両方を実装して比較せよ．
+
+一定のepoch数，もしくは一定以下の誤差値で，学習率が段階的に下がるようし，効果を検証せよ．
+
+中間層の活性化関数にReLUに加えて，Sigmoidを追加し，(1)ReLu, (2)Sigmoid (3)活性化関数なし　の３通りを比較せよ．
+In [82]:
+!ls ../../../image/
+images.jpeg
+In [ ]:
+from sklearn.datasets import load_digits
+digits = load_digits(n_class=2)
+In [174]:
+import numpy as np
+digits.target
+print(digits.data.shape)
+(360, 64)
+In [113]:
+import matplotlib.pyplot as plt
+plt.gray()
+plt.imshow(digits.images[7])
+Out[113]:
+<matplotlib.image.AxesImage at 0x7f7eda675150>
+
+In [118]:
+digits.target[7]
+Out[118]:
+0
+In [122]:
+train_data = digits.images[0:10]
+print(train_data.shape)
+train_label = digits.target[0:10]
+print(train_label.shape)
+(10, 8, 8)
+(10,)
+In [132]:
+test_data = digits.images[10:20]
+print(train_data.shape)
+test_label = digits.target[10:20]
+print(test_label.shape)
+(10, 64)
+(10,)
+In [133]:
+print(np.reshape(train_data,[-1,64]))
+[[  0.   0.   2.  15.  13.   3.   0.   0.   0.   0.  10.  15.  11.  15.
+    0.   0.   0.   3.  16.   6.   0.  10.   0.   0.   0.   4.  16.   8.
+    0.   3.   8.   0.   0.   8.  14.   3.   0.   4.   8.   0.   0.   3.
+   15.   1.   0.   3.   7.   0.   0.   0.  14.  11.   6.  14.   5.   0.
+    0.   0.   4.  12.  15.   6.   0.   0.]
+ [  0.   0.   1.  15.  13.   1.   0.   0.   0.   0.   7.  16.  14.   8.
+    0.   0.   0.   8.  12.   9.   2.  13.   2.   0.   0.   7.   9.   1.
+    0.   6.   6.   0.   0.   5.   9.   0.   0.   3.   9.   0.   0.   0.
+   15.   2.   0.   8.  12.   0.   0.   0.   9.  15.  13.  16.   6.   0.
+    0.   0.   0.  13.  14.   8.   0.   0.]
+ [  0.   0.   2.  14.  15.   5.   0.   0.   0.   0.  10.  16.  16.  15.
+    1.   0.   0.   3.  16.  10.  10.  16.   4.   0.   0.   5.  16.   0.
+    0.  14.   6.   0.   0.   5.  16.   6.   0.  12.   7.   0.   0.   1.
+   15.  13.   4.  13.   6.   0.   0.   0.  11.  16.  16.  15.   0.   0.
+    0.   0.   2.  11.  13.   4.   0.   0.]
+ [  0.   0.   0.   0.  12.  13.   1.   0.   0.   0.   0.   8.  16.  15.
+    2.   0.   0.   0.  10.  16.  16.  12.   0.   0.   0.   4.  16.  16.
+   16.  13.   0.   0.   0.   4.   7.   4.  16.   6.   0.   0.   0.   0.
+    0.   1.  16.   8.   0.   0.   0.   0.   0.   1.  16.   8.   0.   0.
+    0.   0.   0.   0.  12.  12.   0.   0.]
+ [  0.   0.   0.   0.  14.   7.   0.   0.   0.   0.   0.  13.  16.   9.
+    0.   0.   0.   0.  10.  16.  16.   7.   0.   0.   0.   7.  16.   8.
+   16.   2.   0.   0.   0.   1.   5.   6.  16.   6.   0.   0.   0.   0.
+    0.   4.  16.   6.   0.   0.   0.   0.   0.   2.  16.   6.   0.   0.
+    0.   0.   0.   0.  12.  11.   0.   0.]
+ [  0.   0.   1.  13.  10.   0.   0.   0.   0.   7.  16.  16.  16.   7.
+    0.   0.   0.   8.  16.  13.  10.  15.   0.   0.   0.   8.  16.   2.
+    2.  15.   3.   0.   0.   5.  15.   2.   0.  12.   7.   0.   0.   1.
+   15.   6.   2.  16.   3.   0.   0.   0.  11.  15.  13.  16.   0.   0.
+    0.   0.   1.  15.  14.   8.   0.   0.]
+ [  0.   0.  10.  12.  10.   0.   0.   0.   0.   3.  16.  16.  16.   4.
+    0.   0.   0.   7.  15.   3.   8.  13.   0.   0.   0.   8.  12.   0.
+    0.  14.   1.   0.   0.   8.  12.   0.   0.   7.   8.   0.   0.   5.
+   13.   0.   0.   4.   8.   0.   0.   0.  14.   8.   0.  10.   8.   0.
+    0.   0.   7.  12.  13.  12.   4.   0.]
+ [  0.   0.   4.  14.  11.   0.   0.   0.   0.   3.  15.  15.  16.   9.
+    0.   0.   0.   8.  13.   0.   3.  15.   1.   0.   0.   8.  12.   0.
+    0.   8.   6.   0.   0.   8.  12.   0.   0.   8.   8.   0.   0.   5.
+   13.   1.   0.   8.   8.   0.   0.   2.  15.  14.  12.  15.   6.   0.
+    0.   0.   5.  16.  15.   8.   0.   0.]
+ [  0.   0.   0.   1.  14.  13.   1.   0.   0.   0.   0.   1.  16.  16.
+    3.   0.   0.   5.  11.  15.  16.  16.   0.   0.   0.   4.  15.  16.
+   16.  15.   0.   0.   0.   0.   0.   8.  16.   7.   0.   0.   0.   0.
+    0.  10.  16.   3.   0.   0.   0.   0.   0.   8.  16.   6.   0.   0.
+    0.   0.   0.   2.  13.  15.   2.   0.]
+ [  0.   0.   0.   1.  16.   5.   0.   0.   0.   0.   0.   5.  16.  11.
+    0.   0.   0.   0.   0.  12.  16.  11.   0.   0.   0.   7.  12.  16.
+   16.   7.   0.   0.   0.   4.   8.  12.  16.   4.   0.   0.   0.   0.
+    0.   9.  16.   2.   0.   0.   0.   0.   0.  10.  16.   2.   0.   0.
+    0.   0.   0.   3.  13.   5.   0.   0.]]
+In [134]:
+class Fc:
+    def __init__(self, n_in, n_out, relu=True, seed=0):
+        self.n_in=n_in
+        self.n_out=n_out
+        self.relu=relu
+        # w,b は全結合層の学習パラメータ．
+        # ReLuも全結合の中に含めてあります．
+        # ReLU=Trueのときは，Heの初期値．Falseのときは，Xavierの初期値とします．．
+        # xは直前のforward計算時の入力値．BPの計算時に必要．
+        np.random.seed(seed) # 同じ初期値を再現できるように seed を指定します．
+        if relu:
+            self.w=np.random.normal(0, math.sqrt(2.0/n_in), (n_out, n_in)) # Heの初期値
+            self.relu0=None # ReLUの順伝搬時に０以下で値が伝搬されない要素のインデックスを記録．BP時に利用．
+        else:
+            self.w=np.random.normal(0, math.sqrt(1.0/n_in), (n_out, n_in)) # Xavierの初期値   
+        self.b=np.zeros((n_out,1))
+        self.x=np.zeros((n_in,1))
+        #　誤差逆伝搬(Back-Propagation時の勾配を記録する変数)
+        self.dEdx=np.zeros((n_in,1)) # dE/dx を表す　BPの時に直前レイヤに伝わる勾配でδと表現されます．
+        self.dEdw=np.zeros((n_out,n_in)) # dE/dw を表す
+        self.dEdb=np.zeros((n_out,1)) # dE/db を表す
+        self.count=0
+        # 以下，MomentamSDGのための設定
+        self.mdw=np.zeros((n_out,n_in))
+        self.mdb=np.zeros((n_out,1))
+​
+    # forward は __call__ を使って定義する．単純な 行列＊ベクトル＋ベクトル　の計算．
+    def __call__(self,x): 
+        self.x = x
+        self.y = np.dot(self.w, x) + self.b
+        # ReLUは，値が０以下の要素は，０とする．０とした要素のインデックスは relu0に記録し，BP時に勾配を伝搬させない．
+        if self.relu:
+            self.relu0= self.y<=0
+            self.y[self.relu0]=0
+        return self.y
+​
+    # backward は，dE/dy を受け取って，dE/dx を出力．内部では，dE/dw, dE/db を更新
+    def backward(self, dEdy):
+            
+        # 順伝搬時に値が０以下だった要素は勾配を０として，勾配伝搬しない．
+        if self.relu:
+            dEdy[self.relu0]=0
+            
+        dydx = np.transpose(self.w)  # dWx/dx= np.transpose(W) であることより．
+        dydw = np.transpose(self.x)  # dWx/dW= np.transpose(x) 
+        # dydb = np.ones((self.n_out,1))   #  db/db = np.ones((n_out,1))　１なので特に計算しない．
+        # dEdw, dEdb に勾配を加算．dEdx (δ)は前層へ伝搬する勾配で，backwardの返り値とする．
+        self.dEdx = np.dot(dydx, dEdy)
+        self.dEdw += np.dot(dEdy, dydw)
+        self.dEdb += dEdy
+        self.count +=1  # 勾配の平均を取るために，足した勾配のサンプル数を記録．
+        return self.dEdx
+​
+    # 勾配をクリア
+    def clear_grad(self):
+        self.dEdw=0
+        self.dEdb=0
+        self.count=0
+​
+    # 勾配法で重みをアップデート．countで割って，足しこんだ勾配のサンプル数で平均を取る
+    def update(self, lr=0.001):
+        self.w -= self.dEdw/self.count * lr
+        self.b -= self.dEdb/self.count * lr
+        self.clear_grad()
+    
+    # 慣性項（モーメンタム項）付きの勾配法
+    def updatem(self, lr=0.001, mu=0.9):
+        print(self.mdw)
+        
+        self.mdw = self.mdw*mu - self.dEdw/self.count*lr
+        self.mdb = self.mdb*mu - self.dEdb/self.count*lr
+        self.w += self.mdw
+        self.b += self.mdb
+        self.clear_grad()
+​
+In [135]:
+fc1=Fc(64,30)
+fc2=Fc(30,20)
+fc3=Fc(20,2,False)
+In [136]:
+%matplotlib inline
+import matplotlib.pyplot as plt
+from IPython import display
+​
+train_data=np.reshape(train_data,[-1,64])
+test_data=np.reshape(test_data,[-1,64])
+lr=0.001 #学習率
+num_epoch=150 # エポック数
+num_batch=1 # mini-batch サイズ
+#plt.hold(False)
+losses=np.array([])
+losses_val=np.array([])
+ep=np.array([])
+# 表示エリアの設定
+fig=plt.figure()
+fig1 = fig.add_subplot(121)
+fig2 = fig.add_subplot(122)
+for epoch in range(num_epoch):
+# Stochastic Gradient Descent なので，epochごとに学習データをシャッフルします．
+#     shuffler = np.random.permutation(num_train)
+#     X_train=X_train[shuffler]
+#     Y_train=Y_train[shuffler]
+    for n in range(0, num_train, num_batch):
+        loss=0
+        for i in range(num_batch):
+            # 順伝搬計算
+            y=fc3(fc2(fc1(np.c_[X_train[n+i]])))
+            # 誤差微分値，誤差値を計算します． 
+            dEdx=y-np.c_[Y_train[n+i]]
+            loss+=(dEdx**2)*0.5
+            # dEdx (δ)を計算して，逆伝搬します．
+            dEdx=fc3.backward(dEdx)
+            dEdx=fc2.backward(dEdx)
+            dEdx=fc1.backward(dEdx)
+        # minibatch の順伝搬，逆伝搬を行ったら，SDGで重みを更新
+        
+        fc1.updatem(lr)
+        fc2.updatem(lr)
+        fc3.updatem(lr)
+        
+#         fc1.update(lr)
+#         fc2.update(lr)
+#         fc3.update(lr)
+        # 各epochの最初にグラフ表示を行います．
+        if n==0:
+            #print "[%d %d] loss: %f" % (epoch,n,loss/num_batch)
+            losses=np.append(losses,loss/num_batch)
+            ep=np.append(ep,epoch)
+            # 検証用データの評価
+            loss_val=0
+            Y_pred=np.array([])
+            for i in range(num_val):
+                # 順伝搬計算
+                y=fc3(fc2(fc1(np.c_[X_val[i]])))
+                Y_pred=np.append(Y_pred,y)
+                # 誤差微分値，誤差値 
+                dEdx=y-np.c_[Y_val[i]]
+                loss_val+=(dEdx**2)*0.5    
+                # print y, Y_val[i], (dEdx**2)*0.5
+            losses_val=np.append(losses_val, loss_val/num_val)
+        
+            display.clear_output(wait = True)
+            fig1.axis([0, num_epoch, 0, 50])
+            fig1.plot(ep,losses,"b")
+            fig1.plot(ep,losses_val,"r")
+            fig2.axis([-8,8,-10,30])
+            y0=np.reshape(Y_pred,[-1])
+            fig2.plot(x0,y0,"b")
+            fig2.plot(x0,f(x0),"r")
+            display.display(fig)
+            if epoch<num_epoch-1:
+                fig2.cla()
+                
+display.clear_output(wait = True)
+print "loss_val:",loss_val
+
+ValueErrorTraceback (most recent call last)
+<ipython-input-136-331bc1473c33> in <module>()
+     25         for i in range(num_batch):
+     26             # 順伝搬計算
+---> 27             y=fc3(fc2(fc1(np.c_[X_train[n+i]])))
+     28             # 誤差微分値，誤差値を計算します．
+     29             dEdx=y-np.c_[Y_train[n+i]]
+
+<ipython-input-134-91425067d7ed> in __call__(self, x)
+     28     def __call__(self,x):
+     29         self.x = x
+---> 30         self.y = np.dot(self.w, x) + self.b
+     31         # ReLUは，値が０以下の要素は，０とする．０とした要素のインデックスは relu0に記録し，BP時に勾配を伝搬させない．
+     32         if self.relu:
+
+ValueError: shapes (30,64) and (1,1) not aligned: 64 (dim 1) != 1 (dim 0)
